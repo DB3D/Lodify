@@ -19,7 +19,7 @@ bl_info = {
     "name"        : "Lodify",
     "description" : "Both LODs and Proxy system for blender 2.80+",
     "author"      : "DB3D",
-    "version"     : (0, 1),
+    "version"     : (0, 2),
     "blender"     : (2, 80, 0),
     "location"    : "''Propeties'' > ''Object Data'' > ''Level of Detail''",
     "warning"     : "",
@@ -40,6 +40,7 @@ ________________________________________________________________________________
 
  -  You can choose which lods you want to display in either the active viewport, the
     rendered view or the final render individually. 
+
   
  -  The LOD system use API properties stored within your object and object-data
     properties, that mean that once you created a LOD system for your object,
@@ -71,6 +72,8 @@ ________________________________________________________________________________
    "depsgraph updates" you might just want to click anywhere on the viewport to send a new one. 
    (the default header shading viewport buttons will work 100% of the time for sure).
 
+ -  Locking the interface on render is mandatory.
+
  - The addon was not made with linking from external blends in mind.
 
 _____________________________________________________________________________________________                    
@@ -94,6 +97,7 @@ ________________________________________________________________________________
     depsgraph, it will crash blender back to desktop instantaneously. To counter that, if user 
     in rendered view and changing rendered boolan, the view will be toggled back and forth.
     You can experience this bug for yourself if you delete 'toggle_shading' in lines 825 and 827.
+    It seems that blender don't like data being changed while cycles is working..
 
 
 """
@@ -377,6 +381,118 @@ class LODIFY_OT_auto_setup_dialog(bpy.types.Operator):
             txt.label(text=f'We found  {len(l)}  Lod(s) for the automatic set-up.')
             txt.scale_y = 0.9
             for m in l: txt.label(text=f'     " {m.name} "')
+
+
+class LODIFY_OT_batch_dialog(bpy.types.Operator):
+    """Dialog Box Batch Actions Center"""
+    bl_idname = "lodify.batch_dialog"
+    bl_label = "Operating on Which influence ?"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    influence : bpy.props.EnumProperty(items= [('Scene','Whole Scene',''),('Selection','Selected Objects','')],default='Scene') #just ob supported right now
+    name_end  : bpy.props.StringProperty(default='_LOD0')
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.prop(self, 'influence', text='')
+
+        layout.label(text='Batch Enable/Disable actions:')
+        row = layout.row(align=True)
+        t = row.operator("lodify.batch_enabled", text="Enable" , icon="MESH_ICOSPHERE" )
+        t.status = True
+        t.opt    = self.influence
+        t = row.operator("lodify.batch_enabled", text="Disable", icon="QUIT" )
+        t.status = False
+        t.opt    = self.influence
+
+        layout.label(text='Batch Change Booleans:')
+
+        row = layout.row(align=True)
+        row.prop(self,"name_end", text='')
+        row = row.row(align=True)
+        row.scale_x = 1.2
+        t = row.operator("lodify.batch_status",text='',icon='RESTRICT_VIEW_OFF')
+        t.api = 'ui_dsp'
+        t.opt = self.influence
+        t.sti = self.name_end
+        if bpy.context.scene.lod.p_rdv_switch:
+            t = row.operator("lodify.batch_status",text='',icon='SHADING_RENDERED')
+            t.api = 'ui_rdv'
+            t.opt = self.influence
+            t.sti = self.name_end
+        if bpy.context.scene.lod.p_rdf_switch:
+            t = row.operator("lodify.batch_status",text='',icon='RESTRICT_RENDER_OFF')
+            t.api = 'ui_rdf'
+            t.opt = self.influence
+            t.sti = self.name_end
+
+        layout.separator(factor=1.0)
+
+
+class LODIFY_OT_batch_enabled(bpy.types.Operator):
+    """batch enable/disable lod_enabled boolean"""
+    bl_idname      = "lodify.batch_enabled"
+    bl_label       = ""
+    bl_description = "batch enable/disable lod_enabled boolean"
+
+    status = bpy.props.BoolProperty()
+    opt    = bpy.props.StringProperty()
+
+    def execute(self, context):
+
+        if self.opt == 'Scene':       sel = [o for o in bpy.context.scene.objects    if o.type == 'MESH']
+        elif self.opt == 'Selection': sel = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+
+        for ob in sel:
+            msh = true_mesh_data(ob)
+            msh.lod_enabled = self.status
+
+        analyse_and_exchange_data()
+
+        return{'FINISHED'}
+
+
+class LODIFY_OT_batch_status(bpy.types.Operator):
+    """batch change ui lists mesh data status"""
+    bl_idname      = "lodify.batch_status"
+    bl_label       = ""
+    bl_description = "batch change ui lists mesh data status"
+
+    api = bpy.props.StringProperty()
+    opt = bpy.props.StringProperty()
+    sti = bpy.props.StringProperty()
+
+    def execute(self, context):
+
+        if self.opt == 'Scene':       sel = [o for o in bpy.context.scene.objects    if o.type == 'MESH']
+        elif self.opt == 'Selection': sel = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+
+        #loop over selection
+        for o in sel:
+            #if original pointer full then we got a active ui_list
+            if o.lod_original:
+                #loop over ui_list
+                for s in o.lod_original.lod_list:
+                    #if lod pointer not empty
+                    if s.ui_lod:
+                        #if data name ends with our string, then change values
+                        if s.ui_lod.name.endswith(self.sti):
+                            exec(f's.{self.api} = True')
+
+        analyse_and_exchange_data()
+
+        return{'FINISHED'}
 
 
 ###########################################################################################
@@ -678,10 +794,11 @@ class LODIFY_MT_operators_menu(bpy.types.Menu):
         msh    = true_mesh_data(obj)
 
         layout.operator("lodify.auto_setup_dialog", icon="SMALL_CAPS", text="Search for Lod(s)").basic = obj.name
+        layout.operator("lodify.batch_dialog"     , icon="BORDERMOVE", text="Batch Change Lod(s)")
         layout.separator()
-        layout.menu("LODIFY_MT_clear_by_index" ,icon="TRASH"       ,text="Clear Specific")
+        layout.menu("LODIFY_MT_clear_by_index" ,icon="TRASH"       ,text="Remove Specific")
         layout.operator("lodify.clear_list"    ,icon="TRASH"       ,text="Clear Whole List").mesh_n = msh.name
-        layout.operator("lodify.cleanse_data"  ,icon="TRASH"       ,text="Cleanse data-block")
+        layout.operator("lodify.cleanse_data"  ,icon="TRASH"       ,text="Cleanse File Data")
         layout.separator()
         layout.operator("lodify.create_backup" ,icon="COPY_ID"     ,text="Store as Back-up")
         layout.menu("LODIFY_MT_restore_backup" ,icon="COPY_ID"     ,text="Restore active data")
@@ -718,10 +835,11 @@ class LODIFY_OT_dialog(bpy.types.Operator):
         layout.prop(scn.lod, 'p_rdv_switch' ,text='automatically switch LODs on rendered view')#,icon='RESTRICT_RENDER_OFF')
 
         #switch behavior
+        layout.box().label(text='LOD switching behavior',icon='FILE_CACHE')
         if scn.lod.p_rdf_switch :
-            layout.box().label(text='LOD switching behavior',icon='FILE_CACHE')
             #lead to a cycle error msg but everything still works fine
             layout.prop(scn.lod,'p_tor_switch',text='turn off all rendered view after final render')
+        layout.prop(scn.lod,'p_lock_interface',text='mandatory interface render lock')
         #devs
         layout.box().label(text='Developpement',icon='SCRIPT')
         layout.prop(scn.lod, 'p_dev_info'  ,text='show developper infos in gui' )
@@ -792,6 +910,12 @@ def analyse_and_exchange_data():
     while storing data when recovery needed"""
 
     scn  = bpy.context.scene
+
+    #mandatory interface lock
+    if scn.lod.p_lock_interface:
+        if not scn.render.use_lock_interface:
+            scn.render.use_lock_interface = True
+
 
     ###### - RENDERED
 
@@ -894,9 +1018,11 @@ def reg_unreg_deps_render(reg):
 @bpy.app.handlers.persistent
 def lodify_pre_render(scene):
     """pre render actions"""
+    
     scn = bpy.context.scene
     if scn.lod.p_rdf_switch:
         c_print("LODIFY HANDLER: [pre F12 render]")
+
 
         #loop over all data.objects if lod_list exist
         for ob in [o for o in bpy.data.objects if (o.type=='MESH') and (o.lod_original!=None)]:
@@ -917,6 +1043,7 @@ def lodify_pre_render(scene):
                     if ob.data != tup[0][1]:
                         c_print(f"                      - changing display data for ''{ob.name}'' to ''{tup[0][1].name}''")
                         ob.data = tup[0][1]
+
 
 @bpy.app.handlers.persistent
 def lodify_post_render(scene):
@@ -983,7 +1110,8 @@ class LODIFY_props_scn(bpy.types.PropertyGroup):
     p_rdf_switch : bpy.props.BoolProperty(default=True,description='automatically change the LOD on final render')
     p_rdv_switch : bpy.props.BoolProperty(default=True,description='automatically change the LOD on rendered view')
     #switch behaviors
-    p_tor_switch : bpy.props.BoolProperty(default=False,description='turn off all rendered view after final render')
+    p_tor_switch     : bpy.props.BoolProperty(default=False,description='turn off all rendered view after final render')
+    p_lock_interface : bpy.props.BoolProperty(default=True ,description='mandatory interface render lock, could cause crashes otherwise')
     #props for devs usage  
     p_dev_info   : bpy.props.BoolProperty(default=False,description='display more infos in the panel (for devs)')
     p_dev_print  : bpy.props.BoolProperty(default=False,description='display more infos in the console (for devs)')
@@ -1034,6 +1162,9 @@ classes = (
             LODIFY_MT_restore_backup,
             LODIFY_OT_auto_setup_op,
             LODIFY_OT_auto_setup_dialog,
+            LODIFY_OT_batch_dialog,
+            LODIFY_OT_batch_enabled,
+            LODIFY_OT_batch_status,
             LODIFY_OT_cleanse_data,
             LODIFY_OT_clear_by_index,
             LODIFY_MT_clear_by_index,
