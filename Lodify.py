@@ -390,7 +390,7 @@ class LODIFY_OT_batch_dialog(bpy.types.Operator):
     bl_options = {'REGISTER', 'INTERNAL'}
 
     influence : bpy.props.EnumProperty(items= [('Scene','Whole Scene',''),('Selection','Selected Objects','')],default='Scene') #just ob supported right now
-    name_end  : bpy.props.StringProperty(default='_LOD0')
+    name_end  : bpy.props.StringProperty()
 
     @classmethod
     def poll(cls, context):
