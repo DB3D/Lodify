@@ -17,14 +17,14 @@
 
 bl_info = {
     "name"        : "Lodify",
-    "description" : "Both LODs and Proxy system for blender 2.80+",
+    "description" : "LOD and Proxy system for blender 2.80 & above",
     "author"      : "DB3D",
     "version"     : (0, 2),
     "blender"     : (2, 80, 0),
     "location"    : "''Propeties'' > ''Object Data'' > ''Level of Detail''",
     "warning"     : "",
-    "wiki_url"    : "",
-    "tracker_url" : "",
+    "wiki_url"    : "https://devtalk.blender.org/t/level-of-detail-addon/12840",
+    "tracker_url" : "https://devtalk.blender.org/t/level-of-detail-addon/12840",
     "category"    : "Object"
 }
 
@@ -35,20 +35,25 @@ import bpy
 doctxt="""
 _____________________________________________________________________________________________                    
 
-About the addon:
+About the addon: Lodify 0.2
 _____________________________________________________________________________________________                    
 
- -  You can choose which lods you want to display in either the active viewport, the
+ -  You can choose which lod you want to display in either the active viewport, the
     rendered view or the final render individually. 
 
-  
  -  The LOD system use API properties stored within your object and object-data
     properties, that mean that once you created a LOD system for your object,
     the LOD(s) data will stick with it once you copy or append your obj to
-    another file for example. Even to users who don't have Lodify installed yet. 
+    another file for example. Even to users who don't have Lodify installed *yet*. 
 
- -  You can automatically search for lods according to their names,  if you use a 
-    "Suzanne LOD 0","Suzanne LOD 1","Suzanne LOD 2" naming system or something similar. 
+ -  You can automatically search for lods in your file according to their names,  
+    if you use a numerical suffix "Suzanne_LOD0","Suzanne_LOD1",...
+    Same goes for lods using custom suffixes such as "_high" "_low" "_proxy"
+
+ -  You can Batch-generate proxies on the fly (by applying a shrinkwrap modifier automatically). 
+
+ -  You can Batch-change LOD properties by lod name ending. There's also simple Batch rename 
+    operator available. 
 
  -  You can use this LOD system as a data backup management system if you need to store
     your mesh data while working on destructive hardsurface modeling for example.
@@ -63,18 +68,22 @@ ________________________________________________________________________________
  -  If you are animating via Modifiers (Bones for ex) the LOD system will work perfectly with
     your animation, assuming that the Vgroups are all assigned correctly for each level of detail
     (that's why it's more easy to create your lod from the final model, as the vgroup will 
-    automatically be assigned when you simplify the topology or decimate it).Shape Keys animation
+    automatically be assigned when you simplify/decimate the topology). Shape Keys animation
     are not compatible with LOD.
 
- - Regarding the Rendered view automatic mesh-data switching:
-   Note that Lodify will try to update the mesh-data on each "blender internal update signal" 
-   (called depsgraph update), so if you use a custom shortcut or pie menu that don't send those 
-   "depsgraph updates" you might just want to click anywhere on the viewport to send a new one. 
-   (the default header shading viewport buttons will work 100% of the time for sure).
+ -  Regarding the Rendered view automatic mesh-data switching:
+    Lodify will try to update the mesh-data on each "blender internal update signal" 
+    (called depsgraph update), so if you use a custom shortcut or pie menu that don't send those 
+    "depsgraph updates" you might just want to click anywhere on the viewport to send a new one. 
+    (the default header shading viewport buttons will work 100% of the time for sure).
 
- -  Locking the interface on render is mandatory.
+ -  Locking the interface on render is mandatory, as cycles don't like mesh data exchange while
+    calculating (cause instant-crash).
 
- - The addon was not made with linking from external blends in mind.
+ -  The addon was NOT made with linking/override from external blends in mind. 
+    Don't try to use Lodify with such workflows, unfortunately it will not work, as Lodify 
+    require a dynamic data exchange (linking/overrides don't allow this, it will freeze data
+    and update mesh internally).  
 
 _____________________________________________________________________________________________                    
 
@@ -87,20 +96,22 @@ ________________________________________________________________________________
  -  As i'm drawing inside object-meshdata and i'm constantly switching the active mesh,
     'lod_original' pointer is used as a constance, and is stored in object properties of
     all mesh-data owners. if you need to work with lodify api, always use this constance 
-    if not None. object.data is simply not reliable (-> 'true_mesh_data')
+    if not None. object.data is simply not reliable (see function 'true_mesh_data', that will
+    find the original mesh data of an object with LOD enabled)
 
- -  All the Lod-switch is done via a fct on each depsg udpate, (->'analyse_and_exchange_data')
+ -  The Lod-switching is done via a fct on each depsg udpate (see 'analyse_and_exchange_data')
     the code just analyse the ui-lists of all objects, if list exist and if boolean filled,
-    the mesh-data is exchanged or restored accordingly.
+    the mesh-data is exchanged or restored accordingly depending on viewport shading or
+    pre/post render handlers.
 
  -  Due to a severe blender crash, while in rendered view, if data is changed from a fct in a
     depsgraph, it will crash blender back to desktop instantaneously. To counter that, if user 
     in rendered view and changing rendered boolan, the view will be toggled back and forth.
-    You can experience this bug for yourself if you delete 'toggle_shading' in lines 825 and 827.
-    It seems that blender don't like data being changed while cycles is working..
-
+    You can experience this bug for yourself if you comment 'toggle_shading'  in 
+    'analyse_and_exchange_data'. Bug was on 2.80/2.81, not sure if resolved. 
 
 """
+
 ###########################################################################################
 #
 #   .oooooo.                                               .
@@ -342,7 +353,7 @@ class LODIFY_OT_auto_setup_op(bpy.types.Operator):
 
 
 class LODIFY_OT_auto_setup_dialog(bpy.types.Operator):
-    """Dialog Box as Preference UI"""
+    """Automatically set up LOD's for the whole scene by a Simple Enumeration Suffix"""
     bl_idname = "lodify.auto_setup_dialog"
     bl_label = "What is the name of your Object ?"
     bl_options = {'REGISTER', 'INTERNAL'}
@@ -383,10 +394,117 @@ class LODIFY_OT_auto_setup_dialog(bpy.types.Operator):
             for m in l: txt.label(text=f'     " {m.name} "')
 
 
+class LODIFY_OT_auto_name_setup_dialog(bpy.types.Operator):
+    """Automatically set up LOD's for the whole scene by Custom Suffix"""
+    bl_idname = "lodify.auto_name_setup_dialog"
+    bl_label = "What are your LOD meshes suffixes ?"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    LOD0 : bpy.props.StringProperty(name="LOD0 ",default="_high")
+    LOD1 : bpy.props.StringProperty(name="LOD1 ",default="_low")
+    LOD2 : bpy.props.StringProperty(name="LOD2 ",default="_proxy")
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def execute(self, context):
+
+        for o in bpy.context.scene.objects:
+            if o.data.name.endswith(self.LOD0):
+                #if original pointer full then we got a active ui_list
+                if not o.lod_original:
+                    #get name of the mesh with no suffix
+                    msh_n = o.data.name.split(self.LOD0)[0]
+                    #check if suffix even exist
+                    if (msh_n+self.LOD1 in bpy.data.meshes) or (msh_n+self.LOD2 in bpy.data.meshes):
+                        o.data.lod_enabled = True
+                        #set up LOD0
+                        bpy.ops.lodify.list_action(action="ADD", mesh_n=o.data.name)
+                        o.data.lod_list[0].ui_lod = o.data
+                        o.data.lod_list[0].ui_rdf = True
+                        o.data.lod_list[0].ui_rdv = True
+                        #set up LOD1
+                        if (msh_n+self.LOD1 in bpy.data.meshes):
+                            bpy.ops.lodify.list_action(action="ADD", mesh_n=o.data.name)
+                            o.data.lod_list[-1].ui_lod = bpy.data.meshes[msh_n+self.LOD1]
+                        #set up LOD2
+                        if (msh_n+self.LOD2 in bpy.data.meshes):
+                            bpy.ops.lodify.list_action(action="ADD", mesh_n=o.data.name)
+                            o.data.lod_list[-1].ui_lod = bpy.data.meshes[msh_n+self.LOD2]
+                            o.data.lod_list[-1].ui_dsp = True
+                        o.data.lod_enabled = False
+
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.prop(self, 'LOD0')
+        layout.prop(self, 'LOD1')
+        layout.prop(self, 'LOD2')
+
+        layout.label(text="Lodify will automatically set-up LOD's for LOD0 object")
+        layout.label(text="By searching for meshes-names suffixes (here above) ")
+        layout.label(text="If the LOD0 object have empty slots of course")        
+
+ 
+
+class LODIFY_OT_auto_lod_generation(bpy.types.Operator):
+    """automatically create LOD meshes for selection by using the shrinkwrap modifier""" 
+    bl_idname      = "lodify.auto_lod_generation"
+    bl_label       = ""
+    bl_description = "automatically create an LOD mesh by using a shrinkwrap modifier automatically"
+
+    def execute(self, context): #special thanks to 'Ludwig Seibt' for this shrinkwrap idea ! 
+
+        active = bpy.context.object
+        selection = bpy.context.selected_objects
+        mesh_selection = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+
+        for o in mesh_selection:
+            #add proxy mesh, modifiers
+            bpy.ops.mesh.primitive_ico_sphere_add(radius=100,location=o.location)
+            proxy = bpy.context.view_layer.objects.active
+            proxy.name = o.name + " Proxy"
+            proxy.data.name = proxy.name.lower().replace(' ','_')
+            if o.material_slots[0]:
+                mat = o.material_slots[0].material
+                proxy.data.materials.append(mat)
+            #add modifier
+            proxy.modifiers.new(type="SHRINKWRAP",name="SHRINKWRAP")
+            proxy.modifiers["SHRINKWRAP"].target = o
+            override = bpy.context.copy()
+            override['object'] = proxy
+            bpy.ops.object.modifier_apply(override,modifier="SHRINKWRAP")
+            #add Lodify Slot 
+            msh = true_mesh_data(o) #make sure to get the correct data
+            msh.lod_enabled = True
+            bpy.ops.lodify.list_action(action="ADD", mesh_n=msh.name)
+            msh.lod_list[-1].ui_lod = o.data
+            msh.lod_list[-1].ui_rdf = True
+            msh.lod_list[-1].ui_rdv = True
+            bpy.ops.lodify.list_action(action="ADD", mesh_n=msh.name)
+            msh.lod_list[-1].ui_lod = proxy.data
+            msh.lod_list[-1].ui_dsp = True
+            #delete proxy, no longer needed, as it is now stored in pointer 
+            bpy.ops.object.delete(override,use_global=False)
+         
+        #restore selection/active 
+        bpy.context.view_layer.objects.active = active 
+        for o in selection: o.select_set(state=True)
+
+        return{'FINISHED'}
+
+
+
 class LODIFY_OT_batch_dialog(bpy.types.Operator):
     """Dialog Box Batch Actions Center"""
     bl_idname = "lodify.batch_dialog"
-    bl_label = "Operating on Which influence ?"
+    bl_label = "Operation Influence ?"
     bl_options = {'REGISTER', 'INTERNAL'}
 
     influence : bpy.props.EnumProperty(items= [('Scene','Whole Scene',''),('Selection','Selected Objects','')],default='Scene') #just ob supported right now
@@ -407,7 +525,7 @@ class LODIFY_OT_batch_dialog(bpy.types.Operator):
 
         layout.prop(self, 'influence', text='')
 
-        layout.label(text='Batch Enable/Disable actions:')
+        layout.label(text='Batch Enable/Disable Level of Detail Operation:')
         row = layout.row(align=True)
         t = row.operator("lodify.batch_enabled", text="Enable" , icon="MESH_ICOSPHERE" )
         t.status = True
@@ -416,7 +534,7 @@ class LODIFY_OT_batch_dialog(bpy.types.Operator):
         t.status = False
         t.opt    = self.influence
 
-        layout.label(text='Batch Change Booleans:')
+        layout.label(text='Batch Change Boolean Properties by suffix:')
 
         row = layout.row(align=True)
         row.prop(self,"name_end", text='')
@@ -440,14 +558,61 @@ class LODIFY_OT_batch_dialog(bpy.types.Operator):
         layout.separator(factor=1.0)
 
 
+
+class LODIFY_OT_batch_rename_dialog(bpy.types.Operator):
+    """Dialog Box Batch Rename selection and mesh names"""
+    bl_idname = "lodify.batch_rename_dialog"
+    bl_label = "What is your suffix ?"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    suffix    : bpy.props.StringProperty(default=" proxy")
+    separate  : bpy.props.BoolProperty(default=False)
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def execute(self, context):
+        sel = bpy.context.selected_objects
+        for o in sel:
+            on = o.name
+            if self.separate and ('.'in on):
+                on = on.split('.')[0]
+            o.name = on + self.suffix
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, 'suffix', text='')
+        layout.label(text="Would you like to get rid of '.000' suffixes?")
+        layout.prop(self, 'separate', text="yes, remove everythign after '.' character")
+        layout.separator(factor=1.0)
+
+
+class LODIFY_OT_batch_mesh_name(bpy.types.Operator):
+    """batch Mesh Name = mesh_name refactor"""
+    bl_idname      = "lodify.batch_mesh_name"
+    bl_label       = ""
+    bl_description = "object 'Suzanne Big 01' mesh name will be 'suzanne_big_01'"
+
+    def execute(self, context):
+        sel = bpy.context.selected_objects
+        for o in sel:
+            o.data.name = o.name.lower().replace(' ','_')
+        return{'FINISHED'}
+
+
 class LODIFY_OT_batch_enabled(bpy.types.Operator):
     """batch enable/disable lod_enabled boolean"""
     bl_idname      = "lodify.batch_enabled"
     bl_label       = ""
     bl_description = "batch enable/disable lod_enabled boolean"
 
-    status = bpy.props.BoolProperty()
-    opt    = bpy.props.StringProperty()
+    status : bpy.props.BoolProperty()
+    opt    : bpy.props.StringProperty()
 
     def execute(self, context):
 
@@ -469,9 +634,9 @@ class LODIFY_OT_batch_status(bpy.types.Operator):
     bl_label       = ""
     bl_description = "batch change ui lists mesh data status"
 
-    api = bpy.props.StringProperty()
-    opt = bpy.props.StringProperty()
-    sti = bpy.props.StringProperty()
+    api : bpy.props.StringProperty()
+    opt : bpy.props.StringProperty()
+    sti : bpy.props.StringProperty()
 
     def execute(self, context):
 
@@ -733,12 +898,14 @@ class LODIFY_PT_objectList(bpy.types.Panel):
         scn    = context.scene
         msh    = true_mesh_data(obj)
 
+
         #disable in edit mode or if Boolean false
-        layout.enabled = (msh.lod_enabled) and (not obj.data.is_editmode)
+        main = layout.column()
+        main.enabled = (msh.lod_enabled) and (not obj.data.is_editmode)
 
         #dev info 
         if scn.lod.p_dev_info:
-            dev = layout.box().column()
+            dev = main.box().column()
             dev.box().label(text='Developpement Infos-Box',icon='INFO')
             dev.separator()
             dev.prop(obj,'data',text='active mesh')
@@ -748,7 +915,7 @@ class LODIFY_PT_objectList(bpy.types.Panel):
             dev.separator()
         
         #define two rows
-        row = layout.row()
+        row = main.row()
         col1 = row.column()
         col2 = row.column()
 
@@ -781,6 +948,12 @@ class LODIFY_PT_objectList(bpy.types.Panel):
         col2.separator()
         col2.menu("LODIFY_MT_operators_menu", icon='DOWNARROW_HLT', text="")
 
+        #additional 
+        if scn.lod.more_op:
+            more = layout.column()
+            more.operator("lodify.batch_rename_dialog"    , icon="SORTALPHA" , text="Batch Rename Objects-names for Selection")
+            more.operator("lodify.batch_mesh_name"        , icon="SORTALPHA" , text="Automatic Meshes-name refactor for Selection")
+
 
 
 class LODIFY_MT_operators_menu(bpy.types.Menu):
@@ -793,23 +966,28 @@ class LODIFY_MT_operators_menu(bpy.types.Menu):
         obj    = context.object
         msh    = true_mesh_data(obj)
 
-        layout.operator("lodify.auto_setup_dialog", icon="SMALL_CAPS", text="Search for Lod(s)").basic = obj.name
-        layout.operator("lodify.batch_dialog"     , icon="BORDERMOVE", text="Batch Change Lod(s)")
+        layout.operator("lodify.clear_list"             ,icon="TRASH"      ,text="Clear Whole Slot List").mesh_n = msh.name
+        layout.menu("LODIFY_MT_clear_by_index"          ,icon="TRASH"      ,text="Remove a Specific Slot")
+        layout.operator("lodify.cleanse_data"           ,icon="TRASH"      ,text="Cleanse File Data")
         layout.separator()
-        layout.menu("LODIFY_MT_clear_by_index" ,icon="TRASH"       ,text="Remove Specific")
-        layout.operator("lodify.clear_list"    ,icon="TRASH"       ,text="Clear Whole List").mesh_n = msh.name
-        layout.operator("lodify.cleanse_data"  ,icon="TRASH"       ,text="Cleanse File Data")
+        layout.operator("lodify.auto_setup_dialog"      ,icon="SMALL_CAPS" ,text="LOD Search by Numeric Suffix").basic = obj.name
+        layout.operator("lodify.auto_name_setup_dialog" ,icon="SMALL_CAPS" ,text="LOD Search by Alphabetical Suffix")
         layout.separator()
-        layout.operator("lodify.create_backup" ,icon="COPY_ID"     ,text="Store as Back-up")
-        layout.menu("LODIFY_MT_restore_backup" ,icon="COPY_ID"     ,text="Restore active data")
+        layout.operator("lodify.batch_dialog"           ,icon="SHADERFX"   ,text="Batch Change LOD's properties by Suffix")
+        layout.operator("lodify.auto_lod_generation"    ,icon="SHADERFX"   ,text="Batch Auto-Generate LOD's")
         layout.separator()
-        layout.operator("lodify.dialog"        ,icon="PREFERENCES" ,text="Parameters")
-        layout.operator("lodify.docs"          ,icon="QUESTION"    ,text="Documentation")
+        layout.operator("lodify.create_backup"          ,icon="COPY_ID"    ,text="Store Mesh-Data as Slot")
+        layout.menu("LODIFY_MT_restore_backup"          ,icon="COPY_ID"    ,text="Replace Active Mesh-Data")
+        layout.separator()
+        layout.operator("lodify.parameters_dialog"      ,icon="PREFERENCES",text="Parameters")
+        layout.operator("lodify.docs"                   ,icon="QUESTION"   ,text="Documentation")
+        layout.operator("wm.url_open"                   ,icon="COMMUNITY"  ,text="Author Products").url = "https://www.blendermarket.com/creators/bd3d-store"
 
 
-class LODIFY_OT_dialog(bpy.types.Operator):
-    """Dialog Box as Preference UI"""
-    bl_idname = "lodify.dialog"
+
+class LODIFY_OT_parameters_dialog(bpy.types.Operator):
+
+    bl_idname = "lodify.parameters_dialog"
     bl_label = "Options"
     bl_options = {'REGISTER', 'INTERNAL'}
 
@@ -844,6 +1022,9 @@ class LODIFY_OT_dialog(bpy.types.Operator):
         layout.box().label(text='Developpement',icon='SCRIPT')
         layout.prop(scn.lod, 'p_dev_info'  ,text='show developper infos in gui' )
         layout.prop(scn.lod, 'p_dev_print' ,text='show developper prints in console' )
+        #more 
+        layout.box().label(text='Additional Operations',icon='PLUS')
+        layout.prop(scn.lod, 'more_op'  ,text='Show Additional Operators')
 
 
 
@@ -860,13 +1041,8 @@ class LODIFY_OT_dialog(bpy.types.Operator):
 ###########################################################################################
 
 
-# ooooooooo.                               .o8                                     .o8
-# `888   `Y88.                            "888                                    "888
-#  888   .d88'  .ooooo.  ooo. .oo.    .oooo888   .ooooo.  oooo d8b  .ooooo.   .oooo888
-#  888ooo88P'  d88' `88b `888P"Y88b  d88' `888  d88' `88b `888""8P d88' `88b d88' `888
-#  888`88b.    888ooo888  888   888  888   888  888ooo888  888     888ooo888 888   888
-#  888  `88b.  888    .o  888   888  888   888  888    .o  888     888    .o 888   888
-# o888o  o888o `Y8bod8P' o888o o888o `Y8bod88P" `Y8bod8P' d888b    `Y8bod8P' `Y8bod88P"
+
+#Rendered View
 
 
 
@@ -985,13 +1161,7 @@ def analyse_and_exchange_data():
 
 
 
-# oooooooooooo  o8o                        oooo       ooooooooo.                               .o8
-# `888'     `8  `"'                        `888       `888   `Y88.                            "888
-#  888         oooo  ooo. .oo.    .oooo.    888        888   .d88'  .ooooo.  ooo. .oo.    .oooo888   .ooooo.  oooo d8b
-#  888oooo8    `888  `888P"Y88b  `P  )88b   888        888ooo88P'  d88' `88b `888P"Y88b  d88' `888  d88' `88b `888""8P
-#  888    "     888   888   888   .oP"888   888        888`88b.    888ooo888  888   888  888   888  888ooo888  888
-#  888          888   888   888  d8(  888   888        888  `88b.  888    .o  888   888  888   888  888    .o  888
-# o888o        o888o o888o o888o `Y888""8o o888o      o888o  o888o `Y8bod8P' o888o o888o `Y8bod88P" `Y8bod8P' d888b
+#Final Render 
 
 
 
@@ -1075,6 +1245,7 @@ def lodify_post_render(scene):
 #                                 o888o
 ###########################################################################################
 
+
 ############ Ui List Props 
 
 #v# update make sure disable boolean if remove
@@ -1115,8 +1286,11 @@ class LODIFY_props_scn(bpy.types.PropertyGroup):
     #props for devs usage  
     p_dev_info   : bpy.props.BoolProperty(default=False,description='display more infos in the panel (for devs)')
     p_dev_print  : bpy.props.BoolProperty(default=False,description='display more infos in the console (for devs)')
+    #props for additional operation
+    more_op  : bpy.props.BoolProperty( name="Additional Operators",default=True)
 
 
+############ Registry
 
 def reg_unreg_props(reg):
     """register/unregister all created props"""
@@ -1162,7 +1336,11 @@ classes = (
             LODIFY_MT_restore_backup,
             LODIFY_OT_auto_setup_op,
             LODIFY_OT_auto_setup_dialog,
+            LODIFY_OT_auto_name_setup_dialog,
+            LODIFY_OT_auto_lod_generation,
             LODIFY_OT_batch_dialog,
+            LODIFY_OT_batch_rename_dialog,
+            LODIFY_OT_batch_mesh_name,
             LODIFY_OT_batch_enabled,
             LODIFY_OT_batch_status,
             LODIFY_OT_cleanse_data,
@@ -1171,7 +1349,7 @@ classes = (
             #--------------------drawing
             LODIFY_UL_items,
             LODIFY_PT_objectList,
-            LODIFY_OT_dialog,
+            LODIFY_OT_parameters_dialog,
             LODIFY_MT_operators_menu,
             #--------------------props
             LODIFY_props_list,
