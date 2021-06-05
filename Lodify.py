@@ -19,7 +19,7 @@ bl_info = {
     "name"        : "Lodify",
     "description" : "LOD and Proxy system for blender 2.80 & above",
     "author"      : "DB3D",
-    "version"     : (0, 2),
+    "version"     : (0, 3),
     "blender"     : (2, 80, 0),
     "location"    : "''Propeties'' > ''Object Data'' > ''Level of Detail''",
     "warning"     : "",
@@ -33,9 +33,12 @@ import bpy
 ###########################################################################################
 
 doctxt="""
+
+v0.3 - dirty fix - correct the rendered view lag issue, replacing depsgraph update handler with timer loop for checking rendered view state
+
 _____________________________________________________________________________________________                    
 
-About the addon: Lodify 0.2
+About the addon
 _____________________________________________________________________________________________                    
 
  -  You can choose which lod you want to display in either the active viewport, the
@@ -1042,43 +1045,6 @@ class LODIFY_OT_parameters_dialog(bpy.types.Operator):
 
 
 
-#Rendered View
-
-
-
-#2.81 introduced an new 'optional' args in desp_post, breaking everything..
-def reg_unreg_deps_post(reg):
-    """ reg/unreg dpsgraph update fcts"""
-    if reg == 'reg':
-        if '2.80' in bpy.app.version_string:
-            if lodify_mesh_data_exchange_80 not in all_handlers():
-                #print('PROXIFY HANDLER: register: "lodify_mesh_data_exchange_80" @persistent (2.80)')
-                bpy.app.handlers.depsgraph_update_post.append(lodify_mesh_data_exchange_80)
-        else:
-            if lodify_mesh_data_exchange_81 not in all_handlers():
-                #print('PROXIFY HANDLER: register: "lodify_mesh_data_exchange_81" @persistent (2.81+)')
-                bpy.app.handlers.depsgraph_update_post.append(lodify_mesh_data_exchange_81)
-
-    if reg == 'unreg':
-        if '2.80' in bpy.app.version_string:
-            for h in all_handlers(): #so can also remove dupplicates
-                if h == lodify_mesh_data_exchange_80:
-                    bpy.app.handlers.depsgraph_update_post.remove(lodify_mesh_data_exchange_80)
-                    #print('PROXIFY HANDLER: unregister: "lodify_mesh_data_exchange_80" (2.80)')
-        else:
-            for h in all_handlers(): #so can also remove dupplicates
-                if h == lodify_mesh_data_exchange_81:
-                    bpy.app.handlers.depsgraph_update_post.remove(lodify_mesh_data_exchange_81)
-                    #print('PROXIFY HANDLER: unregister: "lodify_mesh_data_exchange_81" (2.81+)')
-
-
-@bpy.app.handlers.persistent #for 2.80
-def lodify_mesh_data_exchange_80(scene):
-    analyse_and_exchange_data()
-
-@bpy.app.handlers.persistent #for 2.81
-def lodify_mesh_data_exchange_81(scene,desp): #new "optional" arg 
-    analyse_and_exchange_data()
 
 
 def analyse_and_exchange_data():
@@ -1157,32 +1123,102 @@ def analyse_and_exchange_data():
                 if ob.data != ob.lod_original:
                     c_print(f"                      - restoring original data for ''{ob.data.name}'' back to ''{ob.lod_original.name}''")
                     ob.data = ob.lod_original
+
     return None 
 
 
 
-#Final Render 
+#########################################################################
+#Rendered View Check 
+#########################################################################
 
+# -> == timer that constantly check rendered view state... 
+
+
+def reg_unreg_load_post(reg):
+    if reg == 'reg':
+        if launching_timer not in all_handlers():
+            bpy.app.handlers.load_post.append(launching_timer)
+        return None 
+
+    if reg == 'unreg':
+        for h in all_handlers():
+            if h == launching_timer:
+                bpy.app.handlers.load_post.remove(launching_timer)
+        return None
+
+
+@bpy.app.handlers.persistent
+def launching_timer(self, context):
+    c_print("LODIFY HANDLER: load_post - launching_timer")
+    
+    if not bpy.app.timers.is_registered(check_for_rendered_view):
+        bpy.app.timers.register(check_for_rendered_view)
+    
+    return None 
+
+
+#Timer double loop to detect rednered view changing states
+
+
+def check_for_rendered_view():
+    c_print("check_for_rendered_view()")
+    if ('RENDERED' in _all_viewports_shading_type()):
+        
+        c_print("---RENDERED_VIEW_DETECTED--- launching check_for_NON_rendered_view()")
+        analyse_and_exchange_data()
+        if not bpy.app.timers.is_registered(check_for_non_rendered_view):
+            bpy.app.timers.register(check_for_non_rendered_view)
+        return None 
+
+    return 0.150
+
+
+def check_for_non_rendered_view():
+    c_print("check_for_NON_rendered_view()")
+    if not ('RENDERED' in _all_viewports_shading_type()):
+        
+        c_print("---RENDERED_VIEW_QUITED--- launching check_for_rendered_view()")
+        analyse_and_exchange_data()
+        if not bpy.app.timers.is_registered(check_for_rendered_view):
+            bpy.app.timers.register(check_for_rendered_view)
+        return None 
+
+    return 0.150
+
+
+
+#########################################################################
+#Final Render 
+#########################################################################
 
 
 def reg_unreg_deps_render(reg):
     """reg/unreg actions before and after F12 render"""
+
     if reg == 'reg':
+
         if lodify_pre_render  not in all_handlers():
-            #print('LODIFY HANDLER: register: "lodify_pre_render" @persistent')
             bpy.app.handlers.render_pre.append (lodify_pre_render )
+
         if lodify_post_render not in all_handlers():
-            #print('LODIFY HANDLER: register: "lodify_post_render" @persistent')
             bpy.app.handlers.render_post.append(lodify_post_render)
 
+        return None 
+
     if reg == 'unreg':
+
         for h in all_handlers():
+
             if h == lodify_pre_render:
                 bpy.app.handlers.render_pre.remove (lodify_pre_render)
-                #print('LODIFY HANDLER: unregister: "lodify_pre_render"')
+
             if h == lodify_post_render:
                 bpy.app.handlers.render_post.remove(lodify_post_render)
-                #print('LODIFY HANDLER: unregister: "lodify_post_render"')
+
+        return None 
+
+    return None 
 
 
 @bpy.app.handlers.persistent
@@ -1255,15 +1291,18 @@ def ui_lod_upd(self,context):
 #v# update make sure only one boolean active
 def ui_dsp_upd(self,context):
     if self.ui_dsp == True: only_one_prop(self.id_data, self.ui_idx, "ui_dsp")
+    analyse_and_exchange_data()
     return None
 #v# update make sure only one boolean active
 def ui_rdv_upd(self,context):
     if self.ui_rdv == True: only_one_prop(self.id_data, self.ui_idx, "ui_rdv")
+    analyse_and_exchange_data()
     return None
 #v# update make sure only one boolean active
 def ui_rdf_upd(self,context):
     if self.ui_rdf == True: only_one_prop(self.id_data, self.ui_idx, "ui_rdf")
     return None
+
 #v# update make sure only one boolean active
 class LODIFY_props_list(bpy.types.PropertyGroup):
     #name   : StringProperty() -> Instantiated by default
@@ -1357,23 +1396,21 @@ classes = (
           )
 
 def register():
-    from bpy.utils import register_class
     #classes
-    for cls in classes: register_class(cls)
+    for cls in classes: bpy.utils.register_class(cls)
     #properties
     reg_unreg_props('reg')
-    #despgraph post
-    reg_unreg_deps_post('reg')
+    #on initial blend file launch
+    reg_unreg_load_post('reg')
     #post & pre final render
     reg_unreg_deps_render('reg')
 
 def unregister():
-    from bpy.utils import unregister_class
     #classes
-    for cls in reversed(classes): unregister_class(cls)
+    for cls in reversed(classes): bpy.utils.unregister_class(cls)
     #properties
     reg_unreg_props('unreg')
-    #despgraph post
-    reg_unreg_deps_post('unreg')
+    #on initial blend file launch
+    reg_unreg_load_post('unreg')
     #post & pre final render
     reg_unreg_deps_render('unreg')
