@@ -474,7 +474,7 @@ class LODIFY_OT_auto_lod_generation(bpy.types.Operator):
             proxy = bpy.context.view_layer.objects.active
             proxy.name = o.name + " Proxy"
             proxy.data.name = proxy.name.lower().replace(' ','_')
-            if o.material_slots[0]:
+            if len(o.material_slots):
                 mat = o.material_slots[0].material
                 proxy.data.materials.append(mat)
             #add modifier
@@ -1326,7 +1326,7 @@ class LODIFY_props_scn(bpy.types.PropertyGroup):
     p_dev_info   : bpy.props.BoolProperty(default=False,description='display more infos in the panel (for devs)')
     p_dev_print  : bpy.props.BoolProperty(default=False,description='display more infos in the console (for devs)')
     #props for additional operation
-    more_op  : bpy.props.BoolProperty( name="Additional Operators",default=True)
+    more_op  : bpy.props.BoolProperty( name="Additional Operators",default=False)
 
 
 ############ Registry
