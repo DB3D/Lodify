@@ -500,6 +500,8 @@ class LODIFY_OT_auto_lod_generation(bpy.types.Operator):
         bpy.context.view_layer.objects.active = active 
         for o in selection: o.select_set(state=True)
 
+        bpy.ops.ed.undo_push(message="proxy generation" )
+
         return{'FINISHED'}
 
 
